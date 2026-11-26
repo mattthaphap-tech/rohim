@@ -1,0 +1,123 @@
+name: Render Rohim (chunked)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render-chunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { start: 0, end: 410 }
+          - { start: 411, end: 821 }
+          - { start: 822, end: 1232 }
+          - { start: 1233, end: 1643 }
+          - { start: 1644, end: 2054 }
+          - { start: 2055, end: 2465 }
+          - { start: 2466, end: 2876 }
+          - { start: 2877, end: 3288 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Google Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get update
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+      - name: Install dependencies
+        run: npm install
+      - name: Reassemble audio mix
+        run: |
+          mkdir -p public
+          cat audio-parts/rohim_mix.wav.b64.part-* | base64 -d > public/rohim_mix.wav
+          ls -la public/rohim_mix.wav
+      - name: Render chunk ${{ matrix.start }}-${{ matrix.end }}
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/render-chunk.mjs ${{ matrix.start }} ${{ matrix.end }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.start }}-${{ matrix.end }}
+          path: out/rohim/chunks/chunk-${{ matrix.start }}-${{ matrix.end }}.mp4
+          retention-days: 7
+
+  render-captions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Google Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get update
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+      - name: Install dependencies
+        run: npm install
+      - name: Reassemble audio mix
+        run: |
+          mkdir -p public
+          cat audio-parts/rohim_mix.wav.b64.part-* | base64 -d > public/rohim_mix.wav
+          ls -la public/rohim_mix.wav
+      - name: Render captions (green screen)
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/render-chunk.mjs captions
+      - uses: actions/upload-artifact@v4
+        with:
+          name: captions
+          path: out/rohim/Rohim_Captions_GreenScreen.mp4
+          retention-days: 7
+
+  concat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [render-chunk, render-captions]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+      - name: Reassemble audio mix
+        run: |
+          mkdir -p public
+          cat audio-parts/rohim_mix.wav.b64.part-* | base64 -d > public/rohim_mix.wav
+          ls -la public/rohim_mix.wav
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          path: chunks
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: captions
+          path: captions
+      - name: Concat + composite captions + mux audio
+        run: |
+          ls -la chunks/ captions/
+          printf "file 'chunks/chunk-0-410.mp4'\nfile 'chunks/chunk-411-821.mp4'\nfile 'chunks/chunk-822-1232.mp4'\nfile 'chunks/chunk-1233-1643.mp4'\nfile 'chunks/chunk-1644-2054.mp4'\nfile 'chunks/chunk-2055-2465.mp4'\nfile 'chunks/chunk-2466-2876.mp4'\nfile 'chunks/chunk-2877-3288.mp4'\n" > concat.txt
+          cat concat.txt
+          ffmpeg -y -f concat -safe 0 -i concat.txt -c copy video_nocaps.mp4
+          ffmpeg -y -i video_nocaps.mp4 -i captions/Rohim_Captions_GreenScreen.mp4 -i public/rohim_mix.wav -filter_complex "[1:v]colorkey=0x00FF00:0.3:0.1[ck];[0:v][ck]overlay=0:0[v]" -map "[v]" -map 2:a -c:v libx264 -crf 18 -preset fast -c:a aac -b:a 192k -shortest Rohim_Video_Final_With_Captions.mp4
+          ffmpeg -y -i video_nocaps.mp4 -i public/rohim_mix.wav -c:v copy -c:a aac -b:a 192k -shortest Rohim_Video_Final.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=noprint_wrappers=1 Rohim_Video_Final_With_Captions.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=noprint_wrappers=1 Rohim_Video_Final.mp4
+          ls -la *.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rohim_Final
+          path: |
+            Rohim_Video_Final_With_Captions.mp4
+            Rohim_Video_Final.mp4
+          retention-days: 30
